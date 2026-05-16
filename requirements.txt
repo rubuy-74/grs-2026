@@ -1,0 +1,2 @@
+cloudflare==2.19.4
+python-dotenv==1.0.1
