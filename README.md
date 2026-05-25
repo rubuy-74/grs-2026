@@ -10,7 +10,7 @@
 
 ### Configure environment
 1. Copy `.env.example` to `.env` and fill in the values.
-2. Keep `.env` and `tunnel-credentials.json` out of git.
+2. Keep `.env` out of git.
 
 ### Install dependencies
 ```bash
@@ -21,23 +21,13 @@ pip install -r requirements.txt
 
 This uses the official Cloudflare Python SDK (`cloudflare`).
 
-### Run the tunnel setup script
+### Run the Wormhole CLI
 ```bash
-python scripts/cloudflare_tunnel.py
+python -m wormhole create --dockerfile ./Dockerfile
 ```
 
 ### Run cloudflared
-Install `cloudflared` on the origin host.
-
-If this project created `cloudflared/config.yml` and `tunnel-credentials.json`, run:
-```bash
-cloudflared tunnel --config ./cloudflared/config.yml run
-```
-
-If the script created `cloudflared/token.txt` instead, run:
-```bash
-cloudflared tunnel --token "$(cat ./cloudflared/token.txt)" run
-```
+The CLI starts `cloudflared` in a Docker container on the same network.
 
 ### Verify
 - Visit `CF_TUNNEL_HOSTNAME` and confirm it routes to `CF_ORIGIN_URL`.
