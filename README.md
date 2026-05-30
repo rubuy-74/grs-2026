@@ -23,7 +23,7 @@ This uses the official Cloudflare Python SDK (`cloudflare`).
 
 ### Run the Wormhole CLI
 ```bash
-python -m wormhole create --dockerfile ./Dockerfile
+python -m wormhole create --docker_compose ./docker-compose.yml
 ```
 
 ### Run cloudflared

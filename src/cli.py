@@ -18,7 +18,7 @@ app = typer.Typer(no_args_is_help=True)
 
 @app.command()
 def create(
-    dockerfile: Path = typer.Option(..., "--dockerfile", exists=True, file_okay=True),
+    docker_compose: Path = typer.Option(..., "--docker_compose", exists=True, file_okay=True),
     hostname: str | None = typer.Option(None, "--hostname"),
     port: str | None = typer.Option(None, "--port"),
     protocol: str | None = typer.Option(None, "--protocol"),
@@ -28,32 +28,109 @@ def create(
     """Create a Cloudflare tunnel for a Dockerfile."""
     cfg = config_module.load_config()
 
-    build_result = docker_client.build_image(dockerfile)
-    labels = parse_tunnel_labels(build_result.labels)
+    build_result = docker_client.build_compose_services(docker_compose)
 
-    tunnel_name = name or dockerfile.parent.name or Path.cwd().name
-    tunnel_hostname = hostname or labels.hostname
-    tunnel_port = port or labels.port
-    tunnel_protocol = protocol or labels.protocol
+    base_tunnel_name = name or docker_compose.parent.name
 
-    origin_container_name = f"wormhole-origin-{tunnel_name}"
-    origin_url = f"{tunnel_protocol}://{origin_container_name}:{tunnel_port}"
-    full_hostname = f"{tunnel_hostname}.{cfg.domain_name}"
+    services_to_deploy = []
 
-    if dry_run:
-        cf = cloudflare_api.create_client(cfg.api_token)
-        cloudflare_api.get_zone_id(cf, cfg.domain_name)
-        typer.echo("Dry run OK")
-        raise typer.Exit(code=0)
+    for service_name, result in build_result.items():
+        labels = parse_tunnel_labels(result.labels)
 
-    network_name = f"wormhole-{tunnel_name}"
-    cloudflared_container_name = f"wormhole-cloudflared-{tunnel_name}"
+        if not labels:
+            typer.echo(f"Skipping service '{service_name}': No Wormhole labels specified.")
+            continue
+
+        if port:
+            tunnel_ports = [port]
+        else:
+            tunnel_ports = list(result.ports.values()) if result.ports else []
+        
+        if not tunnel_ports:
+            typer.echo(f"Skipping service '{service_name}': No port specified.")
+            continue
+        
+        # Use a shared network per compose invocation so services can resolve each other
+        service_network = f"wormhole"
+        service_network += f"-{base_tunnel_name}" if base_tunnel_name else ""
+
+        origin_container_name = f"wormhole-origin"
+        origin_container_name += f"-{base_tunnel_name}" if base_tunnel_name else ""
+        origin_container_name += f"-{service_name}"
+
+        tunnels = []
+        port_count = 0
+        for tunnel_port in tunnel_ports:
+            prefix = f"{base_tunnel_name}-" if base_tunnel_name else ""
+            suffix = port_count if port_count != 0 else ""
+            tunnel_name = f"{prefix}{service_name}{suffix}"
+
+            cloudflared_container_name = f"wormhole-cloudflared-{tunnel_name}"
+            
+            tunnel_protocol = protocol or labels.protocol or "http"
+            origin_url = f"{tunnel_protocol}://{origin_container_name}:{tunnel_port}"
+            
+            tunnel_hostname = hostname or labels.hostname
+            if port_count > 0:
+                full_hostname = f"{tunnel_hostname}-{tunnel_port}.{cfg.domain_name}"
+            else:
+                full_hostname = f"{tunnel_hostname}.{cfg.domain_name}"
+
+            tunnels.append({
+                "tunnel_name": tunnel_name,
+                "cloudflared_container_name": cloudflared_container_name,
+                "origin_url": origin_url,
+                "full_hostname": full_hostname,
+            })
+            port_count += 1
+
+        services_to_deploy.append({
+            "service_name": service_name,
+            "image_id": result.image_id,
+            "network_name": service_network,
+            "origin_container_name": origin_container_name,
+            "tunnels": tunnels,
+            "ports": result.ports,
+            "environment": result.environment,
+        })
+
+    # TODO: add dry_run validation logic
+
+    # Rewrite environment values that reference a compose service name
+    # to point at the actual origin container name the CLI creates. This
+    # ensures TARGET_HOST (and any other env value that equals a service
+    # name) resolves correctly on the Docker network.
+    service_to_origin = {s["service_name"]: s["origin_container_name"] for s in services_to_deploy}
+    for s in services_to_deploy:
+        env = s.get("environment") or {}
+        rewritten: dict[str, str] = {}
+        for k, v in env.items():
+            if isinstance(v, str) and v in service_to_origin:
+                rewritten[k] = service_to_origin[v]
+            else:
+                rewritten[k] = v
+        s["environment"] = rewritten
 
     def cleanup() -> None:
-        docker_client.cleanup_container(cloudflared_container_name)
-        docker_client.cleanup_container(origin_container_name)
-        docker_client.remove_network(network_name)
+        for s in services_to_deploy:
+            for t in s["tunnels"]:
+                try:
+                    docker_client.cleanup_container(t["cloudflared_container_name"])
+                except Exception as e:
+                    typer.echo(f"Warning: Failed to cleanup container {t['cloudflared_container_name']}: {e}")
 
+            try:
+                docker_client.cleanup_container(s["origin_container_name"])
+            except Exception as e:
+                typer.echo(f"Warning: Failed to cleanup container {s['origin_container_name']}: {e}")
+
+        unique_networks = {s["network_name"] for s in services_to_deploy}
+        for network_name in unique_networks:
+            try:
+                docker_client.remove_network(network_name)
+            except Exception as e:
+                typer.echo(f"Warning: Failed to remove network {network_name}: {e}")
+                
     def handle_signal(_signum: int, _frame: object) -> None:
         cleanup()
         raise typer.Exit(code=0)
@@ -61,35 +138,44 @@ def create(
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
-    docker_client.create_network(network_name)
-    docker_client.run_origin_container(
-        image_id=build_result.image_id,
-        name=origin_container_name,
-        network=network_name,
-    )
-
     cf = cloudflare_api.create_client(cfg.api_token)
     zone_id = cloudflare_api.get_zone_id(cf, cfg.domain_name)
-    tunnel_id = cloudflare_api.get_or_create_tunnel(cf, cfg.account_id, tunnel_name)
-    token = cloudflare_api.get_tunnel_token(cf, cfg.account_id, tunnel_id)
-    state.write_token(token)
 
-    cloudflare_api.configure_tunnel(
-        cf,
-        cfg.account_id,
-        tunnel_id,
-        full_hostname,
-        origin_url,
-    )
-    cloudflare_api.upsert_cname(cf, zone_id, full_hostname, tunnel_id)
+    # Create networks (unique) up-front
+    unique_networks = {s["network_name"] for s in services_to_deploy}
+    for n in unique_networks:
+        docker_client.create_network(n)
 
-    docker_client.run_cloudflared_container(
-        name=cloudflared_container_name,
-        network=network_name,
-        token=token,
-    )
+    for s in services_to_deploy:
+        docker_client.run_origin_container(
+            image_id=s["image_id"],
+            name=s["origin_container_name"],
+            network=s["network_name"],
+            environment=s["environment"],
+            ports=s["ports"],
+        )
 
-    typer.echo(f"Tunnel ready. ID: {tunnel_id}. Public URL: https://{full_hostname}")
+        for t in s["tunnels"]:
+            tunnel_id = cloudflare_api.get_or_create_tunnel(cf, cfg.account_id, t["tunnel_name"])
+            token = cloudflare_api.get_tunnel_token(cf, cfg.account_id, tunnel_id)
+            state.write_token(token)
+
+            cloudflare_api.configure_tunnel(
+                cf,
+                cfg.account_id,
+                tunnel_id,
+                t["full_hostname"],
+                t["origin_url"],
+            )
+            cloudflare_api.upsert_cname(cf, zone_id, t["full_hostname"], tunnel_id)
+
+            docker_client.run_cloudflared_container(
+                name=t["cloudflared_container_name"],
+                network=s["network_name"],
+                token=token,
+            )
+
+            typer.echo(f"Tunnel ready. ID: {tunnel_id}. Public URL: https://{t['full_hostname']}")
 
     try:
         signal.pause()
