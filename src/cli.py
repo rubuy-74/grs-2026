@@ -61,7 +61,10 @@ def create(
         tunnels = []
         port_count = 0
         for tunnel_port in tunnel_ports:
-            tunnel_name = f"{base_tunnel_name}-{service_name}{port_count if port_count != 0 else ''}"
+            prefix = f"{base_tunnel_name}-" if base_tunnel_name else ""
+            suffix = port_count if port_count != 0 else ""
+            tunnel_name = f"{prefix}{service_name}{suffix}"
+
             cloudflared_container_name = f"wormhole-cloudflared-{tunnel_name}"
             
             tunnel_protocol = protocol or labels.protocol or "http"
@@ -111,10 +114,23 @@ def create(
     def cleanup() -> None:
         for s in services_to_deploy:
             for t in s["tunnels"]:
-                docker_client.cleanup_container(t["cloudflared_container_name"])
-            docker_client.cleanup_container(s["origin_container_name"])
-            docker_client.remove_network(s["network_name"])
+                try:
+                    docker_client.cleanup_container(t["cloudflared_container_name"])
+                except Exception as e:
+                    typer.echo(f"Warning: Failed to cleanup container {t['cloudflared_container_name']}: {e}")
 
+            try:
+                docker_client.cleanup_container(s["origin_container_name"])
+            except Exception as e:
+                typer.echo(f"Warning: Failed to cleanup container {s['origin_container_name']}: {e}")
+
+        unique_networks = {s["network_name"] for s in services_to_deploy}
+        for network_name in unique_networks:
+            try:
+                docker_client.remove_network(network_name)
+            except Exception as e:
+                typer.echo(f"Warning: Failed to remove network {network_name}: {e}")
+                
     def handle_signal(_signum: int, _frame: object) -> None:
         cleanup()
         raise typer.Exit(code=0)

@@ -129,10 +129,34 @@ def remove_network(name: str) -> None:
         network = client.networks.get(name)
     except docker.errors.NotFound:
         return
-    network.reload() # Refresh the network state
+    network.reload()
     if network.containers:
-        typer.echo(f"Network {name} still has active containers: {network.containers}")
-    network.remove()
+        for container in network.containers:
+            try:
+                network.disconnect(container, force=True)
+            except docker.errors.APIError:
+                pass
+
+    try:
+        network.remove()
+    except docker.errors.APIError as e:
+        if "has active endpoints" in str(e):
+            typer.echo("Found orphaned endpoints. Attempting forceful disconnection...")
+            
+            # Extract container/endpoint names from the error message or forcefully disconnect manually
+            net_inspect = client.api.inspect_network(network.id)
+            containers_in_net = net_inspect.get("Containers", {})
+            
+            for container_id in containers_in_net.keys():
+                try:
+                    client.api.disconnect_network_from_container(network.id, container_id, force=True)
+                except docker.errors.APIError:
+                    pass
+                    
+            # Retry the removal
+            network.remove()
+        else:
+            raise e
 
 
 def run_origin_container(image_id: str, name: str, network: str, environment: dict[str, str] | None = None, 
@@ -204,6 +228,7 @@ def run_cloudflared_container(name: str, network: str, token: str) -> None:
 
 def cleanup_container(container_name):
     try:
+        client = docker.from_env()
         container = client.containers.get(container_name)
         container.stop()
         container.remove(force=True)
