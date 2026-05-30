@@ -7,10 +7,12 @@ services:
       - SERVER_ID=1
       - TARGET_HOST=server2
     networks:
+      - wormhole-public
       - wormhole_net
     labels:
       - "com.wormhole.hostname=testapp3"
       - "com.wormhole.protocol=http"
+      - "com.wormhole.port=8000"
 
   server2:
     build: .
@@ -20,11 +22,15 @@ services:
       - SERVER_ID=2
       - TARGET_HOST=server1
     networks:
+      - wormhole-public
       - wormhole_net
     labels:
       - "com.wormhole.hostname=testapp"
       - "com.wormhole.protocol=http"
+      - "com.wormhole.port=8000"
 
 networks:
   wormhole_net:
     driver: bridge
+  wormhole-public:
+    external: true

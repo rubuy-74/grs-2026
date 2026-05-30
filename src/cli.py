@@ -12,8 +12,18 @@ from . import config as config_module
 from . import docker_client
 from .labels import parse_tunnel_labels
 from . import state
+from .daemon import WormholeDaemon
 
 app = typer.Typer(no_args_is_help=True)
+
+
+@app.command()
+def daemon(
+    interval: int = typer.Option(30, "--interval", help="Polling interval in seconds"),
+) -> None:
+    """Run Wormhole in daemon mode."""
+    d = WormholeDaemon()
+    d.run(interval=interval)
 
 
 @app.command()

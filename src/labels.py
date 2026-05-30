@@ -12,21 +12,20 @@ class LabelError(RuntimeError):
 @dataclass(frozen=True)
 class TunnelLabels:
     hostname: str
-    #port: str
     protocol: str
+    port: str | None = None
 
 
 def parse_tunnel_labels(labels: dict[str, str]) -> TunnelLabels:
     hostname = labels.get("com.wormhole.hostname", "").strip()
-    # TODO Check if port is really necessary since we parse the "ports" section in docker compose
-    # port = labels.get("com.wormhole.port", "").strip()
-    protocol = labels.get("com.wormhole.protocol", "").strip()
+    protocol = labels.get("com.wormhole.protocol", "http").strip()
+    port = labels.get("com.wormhole.port", "").strip()
 
     if not hostname:
         raise LabelError("Missing label: com.wormhole.hostname")
-    #if not port:
-    #    raise LabelError("Missing label: com.wormhole.port")
-    if not protocol:
-        raise LabelError("Missing label: com.wormhole.protocol")
-
-    return TunnelLabels(hostname=hostname, protocol=protocol)
+    
+    return TunnelLabels(
+        hostname=hostname, 
+        protocol=protocol,
+        port=port if port else None
+    )

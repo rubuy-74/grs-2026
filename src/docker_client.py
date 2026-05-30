@@ -159,6 +159,27 @@ def remove_network(name: str) -> None:
             raise e
 
 
+def get_containers_on_network(network_name: str) -> list[docker.models.containers.Container]:
+    client = docker.from_env()
+    try:
+        network = client.networks.get(network_name)
+        network.reload()
+        # Filter out cloudflared containers themselves to avoid infinite loops or recursion
+        return [
+            c for c in network.containers 
+            if "wormhole-cloudflared" not in c.name
+        ]
+    except docker.errors.NotFound:
+        return []
+
+
+def get_managed_cloudflared_containers() -> list[docker.models.containers.Container]:
+    client = docker.from_env()
+    return client.containers.list(
+        filters={"label": "com.wormhole.managed=true"}
+    )
+
+
 def run_origin_container(image_id: str, name: str, network: str, environment: dict[str, str] | None = None, 
                          ports: dict[int, int] | None = None) -> None:
     client = docker.from_env()
@@ -194,7 +215,7 @@ def run_origin_container(image_id: str, name: str, network: str, environment: di
         raise DockerError(f"Docker error while starting container {name}: {e}")
 
 
-def run_cloudflared_container(name: str, network: str, token: str) -> None:
+def run_cloudflared_container(name: str, network: str, token: str, labels: dict[str, str] | None = None) -> None:
     client = docker.from_env()
     try:
         client.images.pull("cloudflare/cloudflared:latest")
@@ -213,12 +234,18 @@ def run_cloudflared_container(name: str, network: str, token: str) -> None:
     if existing:
         existing.stop()
         existing.remove()
+
+    container_labels = {"com.wormhole.managed": "true"}
+    if labels:
+        container_labels.update(labels)
+
     try:
         client.containers.run(
             image="cloudflare/cloudflared:latest",
             name=name,
             detach=True,
             network=network,
+            labels=container_labels,
             command=["tunnel", "--no-autoupdate", "run", "--token", token],
         )
     except docker.errors.APIError as e:
