@@ -26,8 +26,17 @@ This uses the official Cloudflare Python SDK (`cloudflare`).
 python -m wormhole create --docker_compose ./docker-compose.yml
 ```
 
-### Run cloudflared
-The CLI starts `cloudflared` in a Docker container on the same network.
+### Daemon Mode
+Automatically manage tunnels for containers on the `wormhole-public` network.
+
+```bash
+docker compose -f docker-compose.daemon.yml up -d
+```
+
+#### Service Labels
+- `com.wormhole.hostname=myapp` (required)
+- `com.wormhole.protocol=http` (optional, default: http)
+- `com.wormhole.port=8080` (optional, auto-detected if exposed)
 
 ### Verify
 - Visit `CF_TUNNEL_HOSTNAME` and confirm it routes to `CF_ORIGIN_URL`.

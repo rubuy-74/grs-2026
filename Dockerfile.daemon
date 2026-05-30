@@ -4,4 +4,6 @@ WORKDIR /app
 COPY . .
 RUN pip install -r requirements.txt
 
-CMD ["python", "server.py"]
+ENV PYTHONPATH=/app/src
+ENTRYPOINT ["python", "-m", "src"]
+CMD ["daemon"]
