@@ -9,7 +9,7 @@ services:
     networks:
       - wormhole_net
     labels:
-      - "com.wormhole.hostname=testapp"
+      - "com.wormhole.hostname=testapp3"
       - "com.wormhole.protocol=http"
 
   server2:

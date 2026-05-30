@@ -32,7 +32,6 @@ def create(
 
     base_tunnel_name = name or docker_compose.parent.name
 
-    # Phase 1: Parse configuration and build deployment manifests
     services_to_deploy = []
 
     for service_name, result in build_result.items():
@@ -42,7 +41,6 @@ def create(
             typer.echo(f"Skipping service '{service_name}': No Wormhole labels specified.")
             continue
 
-        # Use explicitly provided CLI port, or default to all ports found in the compose result
         if port:
             tunnel_ports = [port]
         else:
@@ -51,10 +49,15 @@ def create(
         if not tunnel_ports:
             typer.echo(f"Skipping service '{service_name}': No port specified.")
             continue
-
-        service_network = f"wormhole-{base_tunnel_name}-{service_name}"
-        origin_container_name = f"wormhole-origin-{base_tunnel_name}-{service_name}"
         
+        service_network = f"wormhole"
+        service_network += f"-{base_tunnel_name}" if base_tunnel_name else ""
+        service_network += f"-{service_name}"
+
+        origin_container_name = f"wormhole-origin"
+        origin_container_name += f"-{base_tunnel_name}" if base_tunnel_name else ""
+        origin_container_name += f"-{service_name}"
+
         tunnels = []
         port_count = 0
         for tunnel_port in tunnel_ports:
@@ -65,7 +68,6 @@ def create(
             origin_url = f"{tunnel_protocol}://{origin_container_name}:{tunnel_port}"
             
             tunnel_hostname = hostname or labels.hostname
-            # Avoid hostname collisions on Cloudflare when a container exposes multiple ports
             if port_count > 0:
                 full_hostname = f"{tunnel_hostname}-{tunnel_port}.{cfg.domain_name}"
             else:
@@ -85,11 +87,12 @@ def create(
             "network_name": service_network,
             "origin_container_name": origin_container_name,
             "tunnels": tunnels,
+            "ports": result.ports,
+            "environment": result.environment,
         })
 
-    # TODO: add dry_run validation logic here if needed
+    # TODO: add dry_run validation logic
 
-    # Phase 2: Define tracking cleanup and signal safety handlers
     def cleanup() -> None:
         for s in services_to_deploy:
             for t in s["tunnels"]:
@@ -104,22 +107,20 @@ def create(
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
-    # Phase 3: Execution and Infrastructure Provisioning
     cf = cloudflare_api.create_client(cfg.api_token)
     zone_id = cloudflare_api.get_zone_id(cf, cfg.domain_name)
 
     for s in services_to_deploy:
-        # Create a unified backend network for this specific service
         docker_client.create_network(s["network_name"])
         
-        # Spin up the core origin container application
         docker_client.run_origin_container(
             image_id=s["image_id"],
             name=s["origin_container_name"],
             network=s["network_name"],
+            environment=s["environment"],
+            ports=s["ports"],
         )
 
-        # Provision unique Cloudflare Tunnels and sidecar cloudflared routing daemons per port
         for t in s["tunnels"]:
             tunnel_id = cloudflare_api.get_or_create_tunnel(cf, cfg.account_id, t["tunnel_name"])
             token = cloudflare_api.get_tunnel_token(cf, cfg.account_id, tunnel_id)
@@ -142,7 +143,6 @@ def create(
 
             typer.echo(f"Tunnel ready. ID: {tunnel_id}. Public URL: https://{t['full_hostname']}")
 
-    # Block processing and await interruption
     try:
         signal.pause()
     finally:

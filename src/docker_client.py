@@ -24,13 +24,14 @@ class ServiceBuildResult:
     image_id: str
     labels: dict[str, object]
     ports: dict[int, int]
+    environment: dict[str, str]
 
 
 def build_compose_services(compose_path: Path) -> dict[str, ServiceBuildResult]:
     client = docker.from_env()
     compose_path = compose_path.resolve()
     if not compose_path.exists():
-        raise DockerError(f"Dockerfile not found: {dockerfile_path}")
+        raise DockerError(f"Compose file not found: {compose_path}")
 
     with open(compose_path, "r") as f:
         compose_data = yaml.safe_load(f)
@@ -68,10 +69,10 @@ def build_compose_services(compose_path: Path) -> dict[str, ServiceBuildResult]:
         
         # Remove non wormhole labels
         labels_dict = {
-        k: v
-        for k, v in labels_dict.items()
-            if k.startswith("com.wormhole.")
-}
+            k: v
+            for k, v in labels_dict.items()
+                if k.startswith("com.wormhole.")
+        }
 
         ports_dict = {}
         compose_ports = service_config.get("ports", [])
@@ -89,14 +90,29 @@ def build_compose_services(compose_path: Path) -> dict[str, ServiceBuildResult]:
                         print(f"Warning: Could not parse port mapping '{port}' into integers.")
         elif isinstance(compose_ports, dict):
             for k, v in compose_ports.items():
-                ports_dict[int(k)] = int(v) 
+                ports_dict[int(k)] = int(v)
+
+        compose_env = service_config.get("environment", {})
+        env_dict = {}
+        if isinstance(compose_env, list):
+            for env in compose_env:
+                if "=" in env:
+                    k, v = env.split("=", 1)
+                    env_dict[k.strip()] = v.strip()
+        elif isinstance(compose_env, dict):
+            for k, v in compose_env.items():
+                env_dict[k] = "" if v is None else str(v)
 
         res[service_name] = ServiceBuildResult(
             service_name=service_name,
             image_id=image.id,
             labels=labels_dict,
-            ports=ports_dict
+            ports=ports_dict,
+            environment=env_dict,
         )
+
+
+
     return res
 
 def create_network(name: str) -> None:
@@ -116,7 +132,8 @@ def remove_network(name: str) -> None:
     network.remove()
 
 
-def run_origin_container(image_id: str, name: str, network: str) -> None:
+def run_origin_container(image_id: str, name: str, network: str, environment: dict[str, str] | None = None, 
+                         ports: dict[int, int] | None = None) -> None:
     client = docker.from_env()
     try:
         existing = client.containers.get(name)
@@ -125,17 +142,43 @@ def run_origin_container(image_id: str, name: str, network: str) -> None:
     if existing:
         existing.stop()
         existing.remove()
-    client.containers.run(
-        image=image_id,
-        name=name,
-        detach=True,
-        network=network,
-    )
+
+    run_kwargs = {}
+    if environment:
+        run_kwargs['environment'] = environment
+    if ports:
+        ports_mapping = { f"{container_port}/tcp": host_port
+                          for host_port, container_port in ports.items() }
+        run_kwargs['ports'] = ports_mapping
+    try:
+        client.containers.run(
+            image=image_id,
+            name=name,
+            detach=True,
+            network=network,
+            **run_kwargs,
+        )
+    except docker.errors.APIError as e:
+        # Surface a clearer error for common failures (eg. port already in use)
+        explanation = getattr(e, "explanation", None) or str(e)
+        raise DockerError(f"Failed to start container {name}: {explanation}")
+    except docker.errors.DockerException as e:
+        # Generic Docker client errors
+        raise DockerError(f"Docker error while starting container {name}: {e}")
 
 
 def run_cloudflared_container(name: str, network: str, token: str) -> None:
     client = docker.from_env()
-    client.images.pull("cloudflare/cloudflared:latest")
+    try:
+        client.images.pull("cloudflare/cloudflared:latest")
+    except docker.errors.DockerException as e:
+        # Common cause: docker credential helper misconfigured in WSL/remote env.
+        raise DockerError(
+            "Failed to pull 'cloudflare/cloudflared:latest'. "
+            "You can try running 'docker pull cloudflare/cloudflared:latest' manually or fix your Docker credentials/config (~/.docker/config.json). "
+            f"Original error: {e}"
+        )
+
     try:
         existing = client.containers.get(name)
     except docker.errors.NotFound:
@@ -143,13 +186,17 @@ def run_cloudflared_container(name: str, network: str, token: str) -> None:
     if existing:
         existing.stop()
         existing.remove()
-    client.containers.run(
-        image="cloudflare/cloudflared:latest",
-        name=name,
-        detach=True,
-        network=network,
-        command=["tunnel", "--no-autoupdate", "run", "--token", token],
-    )
+    try:
+        client.containers.run(
+            image="cloudflare/cloudflared:latest",
+            name=name,
+            detach=True,
+            network=network,
+            command=["tunnel", "--no-autoupdate", "run", "--token", token],
+        )
+    except docker.errors.APIError as e:
+        explanation = getattr(e, "explanation", None) or str(e)
+        raise DockerError(f"Failed to start cloudflared container {name}: {explanation}")
 
 
 def cleanup_container(name: str) -> None:
