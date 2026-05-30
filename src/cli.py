@@ -18,7 +18,7 @@ app = typer.Typer(no_args_is_help=True)
 
 @app.command()
 def create(
-    dockerfile: Path = typer.Option(..., "--dockerfile", exists=True, file_okay=True),
+    docker_compose: Path = typer.Option(..., "--docker_compose", exists=True, file_okay=True),
     hostname: str | None = typer.Option(None, "--hostname"),
     port: str | None = typer.Option(None, "--port"),
     protocol: str | None = typer.Option(None, "--protocol"),
@@ -28,10 +28,28 @@ def create(
     """Create a Cloudflare tunnel for a Dockerfile."""
     cfg = config_module.load_config()
 
-    build_result = docker_client.build_image(dockerfile)
-    labels = parse_tunnel_labels(build_result.labels)
+    build_result = docker_client.build_compose_services(docker_compose)
 
-    tunnel_name = name or dockerfile.parent.name or Path.cwd().name
+    if dry_run:
+        cf = cloudflare_api.create_client(cfg.api_token)
+        cloudflare_api.get_zone_id(cf, cfg.domain_name)
+        typer.echo("Cloudflare API & Zone validation: OK")
+
+    base_tunnel_name = name or docker_compose.parent.name
+
+    for service_name, result in build_result.items():
+        labels = parse_tunnel_labels(result.labels)
+
+        if not labels:
+            typer.echo(f"Skipping service '{service_name}': No Wormhole labels specified.")
+            continue
+
+        tunnel_hostname = hostname or (labels.hostname if labels else None)
+        tunnel_ports = result.ports.values or []
+        tunnel_protocol = protocol or (labels.protocol if labels else "http")
+        
+
+    tunnel_name = name or docker_compose.parent.name or Path.cwd().name
     tunnel_hostname = hostname or labels.hostname
     tunnel_port = port or labels.port
     tunnel_protocol = protocol or labels.protocol

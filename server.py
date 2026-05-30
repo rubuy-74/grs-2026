@@ -18,7 +18,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-type', 'text/html')
         self.end_headers()
 
-        # The web page interface
         html = f"""
         <!DOCTYPE html>
         <html>
