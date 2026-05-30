@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  server1:
+    build: .
+    ports:
+      - "8001:8000"
+    environment:
+      - SERVER_ID=1
+      - TARGET_HOST=server2
+    networks:
+      - wormhole_net
+
+  server2:
+    build: .
+    ports:
+      - "8002:8000"
+    environment:
+      - SERVER_ID=2
+      - TARGET_HOST=server1
+    networks:
+      - wormhole_net
+
+networks:
+  wormhole_net:
+    driver: bridge
