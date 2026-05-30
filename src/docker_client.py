@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import yaml
-
+import typer
 import docker
 
 
@@ -129,6 +129,9 @@ def remove_network(name: str) -> None:
         network = client.networks.get(name)
     except docker.errors.NotFound:
         return
+    network.reload() # Refresh the network state
+    if network.containers:
+        typer.echo(f"Network {name} still has active containers: {network.containers}")
     network.remove()
 
 
@@ -199,11 +202,10 @@ def run_cloudflared_container(name: str, network: str, token: str) -> None:
         raise DockerError(f"Failed to start cloudflared container {name}: {explanation}")
 
 
-def cleanup_container(name: str) -> None:
-    client = docker.from_env()
+def cleanup_container(container_name):
     try:
-        container = client.containers.get(name)
+        container = client.containers.get(container_name)
+        container.stop()
+        container.remove(force=True)
     except docker.errors.NotFound:
-        return
-    container.stop()
-    container.remove()
+        pass

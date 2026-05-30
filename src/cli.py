@@ -50,9 +50,9 @@ def create(
             typer.echo(f"Skipping service '{service_name}': No port specified.")
             continue
         
+        # Use a shared network per compose invocation so services can resolve each other
         service_network = f"wormhole"
         service_network += f"-{base_tunnel_name}" if base_tunnel_name else ""
-        service_network += f"-{service_name}"
 
         origin_container_name = f"wormhole-origin"
         origin_container_name += f"-{base_tunnel_name}" if base_tunnel_name else ""
@@ -93,6 +93,21 @@ def create(
 
     # TODO: add dry_run validation logic
 
+    # Rewrite environment values that reference a compose service name
+    # to point at the actual origin container name the CLI creates. This
+    # ensures TARGET_HOST (and any other env value that equals a service
+    # name) resolves correctly on the Docker network.
+    service_to_origin = {s["service_name"]: s["origin_container_name"] for s in services_to_deploy}
+    for s in services_to_deploy:
+        env = s.get("environment") or {}
+        rewritten: dict[str, str] = {}
+        for k, v in env.items():
+            if isinstance(v, str) and v in service_to_origin:
+                rewritten[k] = service_to_origin[v]
+            else:
+                rewritten[k] = v
+        s["environment"] = rewritten
+
     def cleanup() -> None:
         for s in services_to_deploy:
             for t in s["tunnels"]:
@@ -110,9 +125,12 @@ def create(
     cf = cloudflare_api.create_client(cfg.api_token)
     zone_id = cloudflare_api.get_zone_id(cf, cfg.domain_name)
 
+    # Create networks (unique) up-front
+    unique_networks = {s["network_name"] for s in services_to_deploy}
+    for n in unique_networks:
+        docker_client.create_network(n)
+
     for s in services_to_deploy:
-        docker_client.create_network(s["network_name"])
-        
         docker_client.run_origin_container(
             image_id=s["image_id"],
             name=s["origin_container_name"],
